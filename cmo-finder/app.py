@@ -15,7 +15,7 @@ from ddgs import DDGS
 
 from agent.extractor import extract_from_rich, extract_from_snippet
 from agent.scraper import scrape_rich
-from agent.searcher import DOSAGE_FORM_KEYWORDS, search_cmos, search_company_contacts
+from agent.searcher import DOSAGE_FORM_KEYWORDS, HUB_GROUPS, search_cmos, search_company_contacts
 
 # ── Config persistence (saves API key locally so user doesn't re-enter it) ───
 CONFIG_PATH = Path(__file__).parent / ".cmo_config.json"
@@ -78,7 +78,13 @@ st.markdown("""
 if "results" not in st.session_state:
     st.session_state.results: list[dict] = []
 if "pending_lookup" not in st.session_state:
-    st.session_state.pending_lookup = None   # index of result needing contact lookup
+    st.session_state.pending_lookup = None
+if "search_batch" not in st.session_state:
+    st.session_state.search_batch = 0        # increments each auto-continue run
+if "auto_continue" not in st.session_state:
+    st.session_state.auto_continue = False
+if "auto_params" not in st.session_state:
+    st.session_state.auto_params = {}        # stores last search params for auto-continue
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -121,9 +127,23 @@ with st.sidebar:
     )
 
     st.divider()
+    st.markdown("### 🔄 Auto-Continue")
+    auto_continue = st.toggle(
+        "Keep searching non-stop",
+        value=st.session_state.auto_continue,
+        help="Automatically runs a new search batch after each one completes, rotating through different Indian pharma hubs.",
+    )
+    st.session_state.auto_continue = auto_continue
+    if auto_continue:
+        hub_idx = st.session_state.search_batch % len(HUB_GROUPS)
+        st.caption(f"Batch #{st.session_state.search_batch + 1} · Hub: {HUB_GROUPS[hub_idx]}")
+
+    st.divider()
     if st.button("🗑️ Clear All Results", use_container_width=True):
         st.session_state.results = []
         st.session_state.pending_lookup = None
+        st.session_state.search_batch = 0
+        st.session_state.auto_continue = False
         st.rerun()
 
     st.markdown("---")
@@ -155,28 +175,59 @@ with col_req:
     )
 
 # ── Search button ─────────────────────────────────────────────────────────────
-_, btn_col, _ = st.columns([1, 2, 1])
+_, btn_col, stop_col, _ = st.columns([1, 2, 1, 1])
 with btn_col:
     search_clicked = st.button(
         "🔍  Find Manufacturers", use_container_width=True, type="primary",
         disabled=(not api_key) or (not dosage_forms),
     )
+with stop_col:
+    if st.button("⏹ Stop", use_container_width=True, disabled=not st.session_state.auto_continue):
+        st.session_state.auto_continue = False
+        st.rerun()
 
 if not api_key:
     st.info("👈  Enter your Claude API key in the sidebar to get started.")
 
+# Auto-continue: treat it like a search click if params are stored
+_auto_trigger = (
+    st.session_state.auto_continue
+    and st.session_state.auto_params
+    and not search_clicked
+)
+
 # ── Search execution ──────────────────────────────────────────────────────────
-if search_clicked and api_key and dosage_forms:
+if (search_clicked or _auto_trigger) and api_key and dosage_forms:
     client = anthropic.Anthropic(api_key=api_key)
+
+    # Save params for auto-continue to reuse
+    if search_clicked:
+        st.session_state.auto_params = {
+            "dosage_forms": dosage_forms,
+            "product_name": product_name,
+            "requirements": requirements,
+            "max_results":  max_results,
+        }
+        st.session_state.search_batch = 0
+
+    params = st.session_state.auto_params
+    batch  = st.session_state.search_batch
 
     progress_bar = st.progress(0)
     status = st.empty()
     new_results: list[dict] = []
 
-    status.markdown("🔎 **Searching** DuckDuckGo for Indian manufacturers…")
+    hub_idx = batch % len(HUB_GROUPS)
+    status.markdown(
+        f"🔎 **Batch #{batch + 1}** · Searching hub: *{HUB_GROUPS[hub_idx]}*…"
+    )
     progress_bar.progress(8)
 
-    search_hits = search_cmos(dosage_forms, product_name, requirements, max_results)
+    search_hits = search_cmos(
+        params["dosage_forms"], params["product_name"],
+        params["requirements"], params["max_results"],
+        batch=batch,
+    )
 
     if not search_hits:
         st.warning("No search results returned. Try different dosage forms or broaden requirements.")
@@ -192,7 +243,7 @@ if search_clicked and api_key and dosage_forms:
 
         extracted = None
 
-        dosage_context = f"{hit['dosage_form']}" + (f" — {product_name}" if product_name else "")
+        dosage_context = f"{hit['dosage_form']}" + (f" — {params['product_name']}" if params.get('product_name') else "")
 
         if deep_scrape:
             scraped = scrape_rich(hit["url"], follow_contact=True)
@@ -223,7 +274,14 @@ if search_clicked and api_key and dosage_forms:
             added += 1
 
     if added:
-        st.success(f"Added {added} new manufacturer(s) to results.")
+        st.success(f"Added {added} new manufacturer(s) to results (Batch #{batch + 1}).")
+
+    # Advance batch counter and auto-rerun if enabled
+    st.session_state.search_batch = batch + 1
+    if st.session_state.auto_continue:
+        import time as _time
+        _time.sleep(2)   # brief pause between batches
+        st.rerun()
 
 # ── Results section ───────────────────────────────────────────────────────────
 if st.session_state.results:

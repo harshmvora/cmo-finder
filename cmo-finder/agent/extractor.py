@@ -19,35 +19,40 @@ SYSTEM = (
 )
 
 PROMPT_TEMPLATE = """\
-Extract information about a pharmaceutical contract manufacturer (CMO/CDMO) from the content below.
+Extract information about an Indian THIRD-PARTY / CONTRACT pharmaceutical manufacturer from the content below.
+We are ONLY interested in SME companies that manufacture FOR other brands (CMO / CDMO / TPM / loan licence).
+We do NOT want large branded pharma companies (Sun Pharma, Cipla, Lupin, Dr. Reddy's, Aurobindo, Cadila, Zydus, Torrent, Alkem, Mankind, Glenmark, Abbott, Pfizer, Novartis, GSK, Sanofi, IPCA, Wockhardt, Emcure, Biocon, Jubilant, Piramal, Intas, Laurus Labs, Divi's, Granules, etc.).
 
 ALREADY EXTRACTED (trust these, do not ignore them):
 {pre_extracted}
 
-Now extract the remaining fields from the content.
 Return a single JSON object (use null for missing fields):
 
 {{
-  "company_name":     "string — official company name",
-  "plant_address":    "string — complete manufacturing plant/facility address (not office address)",
-  "city":             "string",
-  "state":            "string — Indian state",
-  "contact_person":   "string — name + designation of sales/BD contact if found",
-  "phone":            "string — use pre-extracted if available",
-  "email":            "string — use pre-extracted if available",
-  "website":          "string",
-  "dosage_forms":     ["list of dosage forms they manufacture e.g. tablets, capsules, injectables"],
-  "certifications":   ["WHO-GMP", "USFDA", "EU GMP", "ISO 9001", etc.],
-  "capacity":         "string — production capacity if mentioned",
-  "min_order":        "string — minimum order quantity if mentioned",
-  "specialisation":   "string — any niche or speciality (e.g. oncology, hormones, controlled release)",
-  "description":      "string — 2–3 sentence summary of their CMO/CDMO capabilities",
-  "is_manufacturer":  true
+  "company_name":      "string — official company name",
+  "plant_address":     "string — complete manufacturing plant/facility address",
+  "city":              "string",
+  "state":             "string — Indian state",
+  "contact_person":    "string — name + designation of sales/BD contact if found",
+  "phone":             "string — use pre-extracted if available",
+  "email":             "string — use pre-extracted if available",
+  "website":           "string",
+  "dosage_forms":      ["list of dosage forms they manufacture for third parties"],
+  "certifications":    ["WHO-GMP", "USFDA", "EU GMP", "ISO 9001", etc.],
+  "capacity":          "string — production capacity if mentioned",
+  "min_order":         "string — minimum order quantity if mentioned",
+  "specialisation":    "string — niche e.g. hormones, oncology, controlled release",
+  "description":       "string — 2–3 sentences on their TPM/CMO capabilities",
+  "is_tpm":            true
 }}
 
-Set "is_manufacturer" to false ONLY if this is clearly not a pharmaceutical manufacturer
-(e.g. pure news article, job listing, generic SEO page with no company identity).
-If there is ANY sign of a real company offering manufacturing services, set it to true.
+Set "is_tpm" to false if ANY of these apply:
+- This is a large/listed branded pharma company (see list above)
+- This is primarily a PCD/franchise company that SELLS products, not manufactures for others
+- This is a news article, job board, regulatory page, or generic directory with no specific company
+- The company clearly only manufactures its OWN branded products and does NOT offer third-party services
+
+Set "is_tpm" to true if the company explicitly offers third-party manufacturing, loan licence manufacturing, or contract manufacturing services to other brands.
 
 Source URL: {url}
 Dosage form context: {dosage_form}
@@ -114,7 +119,7 @@ def _call_claude(
         data = _parse_json(msg.content[0].text)
         if not data:
             return None
-        if not data.get("is_manufacturer", True):
+        if not data.get("is_tpm", True):      # reject branded / non-TPM companies
             return None
         if not data.get("company_name"):
             return None

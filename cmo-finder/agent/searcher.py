@@ -1,6 +1,7 @@
 """
 DuckDuckGo-based search for Indian CMOs/CDMOs.
-Generates targeted queries per dosage form and returns candidate URLs + snippets.
+Targets ONLY third-party / loan-licence manufacturers — not big branded pharma.
+Supports hub rotation for continuous searching.
 """
 
 import time
@@ -23,65 +24,73 @@ DOSAGE_FORM_KEYWORDS: dict[str, list[str]] = {
     "APIs (Active Pharma Ingredients)": ["API active pharmaceutical ingredient"],
 }
 
-# Major Indian pharma manufacturing hubs
-INDIA_PHARMA_HUBS = [
-    "Baddi Himachal Pradesh",
-    "Ahmedabad Gujarat",
-    "Surat Gujarat",
-    "Haridwar Uttarakhand",
-    "Roorkee Uttarakhand",
-    "Pune Maharashtra",
-    "Nashik Maharashtra",
-    "Hyderabad Telangana",
-    "Sikkim",
+# Hub groups — rotated across search batches so each run finds new companies
+HUB_GROUPS = [
+    '"Baddi" OR "Nalagarh" OR "Kala Amb"',           # Himachal Pradesh
+    '"Haridwar" OR "Roorkee" OR "Dehradun"',          # Uttarakhand
+    '"Ahmedabad" OR "Surat" OR "Vadodara"',           # Gujarat
+    '"Pune" OR "Nashik" OR "Aurangabad"',             # Maharashtra
+    '"Hyderabad" OR "Vishakhapatnam"',                # Telangana / AP
+    '"Sikkim" OR "Guwahati" OR "Kolkata"',            # North-East / East
+    '"Delhi NCR" OR "Gurgaon" OR "Noida"',            # NCR
+    '"Chandigarh" OR "Panchkula" OR "Mohali"',        # Punjab / Haryana
 ]
 
 SKIP_DOMAINS = [
     "youtube.com", "facebook.com", "twitter.com", "instagram.com",
     "reddit.com", "quora.com", "amazon.com", "wikipedia.org",
     "linkedin.com", "naukri.com", "indeed.com", "glassdoor.com",
+    "moneycontrol.com", "economictimes.com", "livemint.com",
+    "thehindu.com", "ndtv.com", "businessstandard.com",
 ]
 
-# High-value Indian pharma B2B / directory domains to prioritise
+# Known big branded pharma to exclude from results
+BIG_PHARMA_BLACKLIST = {
+    "sun pharma", "sun pharmaceutical", "cipla", "dr reddy",
+    "lupin", "aurobindo", "cadila", "zydus", "torrent pharma",
+    "alkem", "mankind pharma", "glenmark", "abbott india",
+    "pfizer", "novartis", "glaxosmithkline", "gsk", "sanofi",
+    "ipca", "wockhardt", "emcure", "biocon", "jubilant",
+    "divi's", "granules", "laurus labs", "natco pharma",
+    "strides pharma", "piramal", "intas pharma",
+}
+
 PRIORITY_DOMAINS = [
     "site:indiamart.com",
-    "site:pharmahopers.com",
-    "site:pharmabiz.com",
     "site:exportersindia.com",
+    "site:pharmahopers.com",
     "site:tradeindia.com",
+    "site:pharmabiz.com",
     "site:pharmafranchiseehelp.com",
 ]
 
 
-def _build_queries(dosage_form: str, product_name: str, requirements: str) -> list[str]:
+def is_big_pharma(title: str, url: str) -> bool:
+    text = (title + " " + url).lower()
+    return any(bp in text for bp in BIG_PHARMA_BLACKLIST)
+
+
+def _build_queries(dosage_form: str, product_name: str, requirements: str, hub_group: str) -> list[str]:
     kws = DOSAGE_FORM_KEYWORDS.get(dosage_form, [dosage_form.lower()])
     primary = kws[0]
-
-    # If product name given, use it as the primary search term
     product_term = f'"{product_name}"' if product_name else primary
 
+    # Core terminology: use Indian-specific TPM terms, NOT generic "manufacturer"
     queries = [
-        # Broad CMO search
-        f'India CMO CDMO "contract manufacturer" {product_term} GMP plant address phone',
-        # Third-party / loan licence terminology used in India
-        f'India "third party manufacturer" OR "loan licence" {product_term} pharmaceutical contact',
-        # Target B2B directories directly
-        f'{product_term} contract pharma manufacturer India {PRIORITY_DOMAINS[0]} OR {PRIORITY_DOMAINS[1]}',
-        # Hub-specific search
-        f'pharmaceutical contract manufacturer {product_term} "Baddi" OR "Haridwar" OR "Ahmedabad" contact address',
-        f'pharmaceutical contract manufacturer {product_term} "Pune" OR "Hyderabad" OR "Nashik" contact address',
-        # WHO-GMP certified
-        f'India "WHO-GMP" certified contract manufacturer {product_term} address phone email',
+        # Indian term: "third party manufacturing"
+        f'"third party manufacturing" {product_term} India WHO-GMP contact address phone',
+        f'"third party manufacturer" {product_term} India small company contact',
+        # Loan licence — another Indian regulatory term for contract manufacturing
+        f'"loan licence" OR "loan license" {product_term} India pharmaceutical contact address',
+        # Hub-rotated — finds different companies each batch
+        f'"third party manufacturing" {product_term} {hub_group} contact phone address',
+        # B2B directories — these list SMEs not big pharma
+        f'{product_term} "third party" pharma manufacturer {PRIORITY_DOMAINS[0]} OR {PRIORITY_DOMAINS[1]}',
+        f'{product_term} "contract manufacturing" "WHO-GMP" India SME contact {hub_group}',
     ]
 
-    if product_name:
-        # Also search using dosage form + product together
-        queries.append(f'India CMO {primary} "{product_name}" manufacturer contact address')
-
     if requirements:
-        queries.append(
-            f'India CMO {product_term} {requirements} pharmaceutical manufacturer address contact details'
-        )
+        queries.append(f'"third party manufacturing" {product_term} {requirements} India contact address')
 
     return queries
 
@@ -91,36 +100,40 @@ def search_cmos(
     product_name: str = "",
     requirements: str = "",
     max_results: int = 20,
+    batch: int = 0,                  # increments each auto-continue run
 ) -> list[dict]:
     """
-    Search DuckDuckGo for Indian CMOs/CDMOs.
+    Search DuckDuckGo for Indian TPM/CMO/CDMO manufacturers.
+    `batch` rotates the hub group so each run finds different companies.
     Returns list of dicts: url, title, snippet, dosage_form
     """
+    hub_group = HUB_GROUPS[batch % len(HUB_GROUPS)]
     all_results: list[dict] = []
     seen_urls: set[str] = set()
 
     with DDGS() as ddgs:
         for form in dosage_forms:
-            queries = _build_queries(form, product_name, requirements)
+            queries = _build_queries(form, product_name, requirements, hub_group)
 
-            for query in queries[:5]:          # up to 5 queries per dosage form
+            for query in queries[:5]:
                 try:
                     hits = list(ddgs.text(query, region="in-en", max_results=6))
                     for hit in hits:
-                        url = hit.get("href", "")
+                        url   = hit.get("href", "")
+                        title = hit.get("title", "")
                         if not url or url in seen_urls:
                             continue
                         if any(d in url for d in SKIP_DOMAINS):
                             continue
+                        if is_big_pharma(title, url):
+                            continue
                         seen_urls.add(url)
-                        all_results.append(
-                            {
-                                "url": url,
-                                "title": hit.get("title", ""),
-                                "snippet": hit.get("body", ""),
-                                "dosage_form": form,
-                            }
-                        )
+                        all_results.append({
+                            "url":        url,
+                            "title":      title,
+                            "snippet":    hit.get("body", ""),
+                            "dosage_form": form,
+                        })
                     time.sleep(0.5)
                 except Exception:
                     continue
@@ -129,27 +142,19 @@ def search_cmos(
 
 
 def search_company_contacts(company_name: str, ddgs: DDGS) -> list[dict]:
-    """
-    Targeted second-pass: given a company name, search specifically for their
-    contact details, plant address, phone number.
-    """
+    """Targeted second-pass to find contact details for a known company."""
     queries = [
         f'"{company_name}" India pharmaceutical manufacturer address phone contact',
         f'"{company_name}" plant address GST contact email',
     ]
-    results = []
-    seen = set()
+    results, seen = [], set()
     for q in queries:
         try:
             for hit in ddgs.text(q, region="in-en", max_results=4):
                 url = hit.get("href", "")
                 if url and url not in seen:
                     seen.add(url)
-                    results.append({
-                        "url": url,
-                        "title": hit.get("title", ""),
-                        "snippet": hit.get("body", ""),
-                    })
+                    results.append({"url": url, "title": hit.get("title", ""), "snippet": hit.get("body", "")})
             time.sleep(0.3)
         except Exception:
             continue
