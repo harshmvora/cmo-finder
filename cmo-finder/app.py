@@ -213,7 +213,7 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
             "max_results":  max_results,
         }
         st.session_state.search_batch = 0
-        st.session_state.seen_urls = set()   # reset seen URLs on a fresh search
+        st.session_state.seen_urls = set()  # reset seen URLs on a fresh search
 
     params = st.session_state.auto_params
     batch  = st.session_state.search_batch
@@ -228,16 +228,23 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
     )
     progress_bar.progress(8)
 
-    search_hits = search_cmos(
-        params["dosage_forms"], params["product_name"],
-        params["requirements"], params["max_results"],
-        batch=batch,
-        already_seen=st.session_state.seen_urls,
-    )
+    # Always pass a plain Python set — Streamlit proxies don't support .add()
+    try:
+        search_hits = search_cmos(
+            params["dosage_forms"], params["product_name"],
+            params["requirements"], params["max_results"],
+            batch=batch,
+            already_seen=set(st.session_state.seen_urls),
+        )
+    except Exception as search_err:
+        st.error(f"Search error: {search_err}")
+        st.stop()
 
-    # Record all URLs we just tried so future batches skip them
+    # Record all URLs we just tried (assign new set — avoids Streamlit proxy mutation issues)
+    new_seen = set(st.session_state.seen_urls)
     for h in search_hits:
-        st.session_state.seen_urls.add(h["url"])
+        new_seen.add(h["url"])
+    st.session_state.seen_urls = new_seen
 
     if not search_hits:
         if st.session_state.auto_continue:

@@ -3,6 +3,7 @@ DuckDuckGo-based search for Indian CMOs/CDMOs.
 Targets ONLY third-party / loan-licence manufacturers — not big branded pharma.
 Supports hub rotation for continuous searching.
 """
+from __future__ import annotations  # allows | union syntax on Python 3.9
 
 import time
 from ddgs import DDGS
