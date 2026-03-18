@@ -85,6 +85,8 @@ if "auto_continue" not in st.session_state:
     st.session_state.auto_continue = False
 if "auto_params" not in st.session_state:
     st.session_state.auto_params = {}        # stores last search params for auto-continue
+if "seen_urls" not in st.session_state:
+    st.session_state.seen_urls: set[str] = set()   # URLs already processed (cross-batch)
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -110,7 +112,8 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 🔎 Search Settings")
-    max_results = st.slider("Max URLs to analyse", 5, 40, 15, 5)
+    max_results = st.slider("New URLs per batch", 5, 50, 25, 5,
+        help="Each batch fetches this many fresh URLs (already-seen URLs are skipped automatically)")
     deep_scrape = st.checkbox(
         "Deep scrape + contact-page hunting",
         value=True,
@@ -144,6 +147,7 @@ with st.sidebar:
         st.session_state.pending_lookup = None
         st.session_state.search_batch = 0
         st.session_state.auto_continue = False
+        st.session_state.seen_urls = set()
         st.rerun()
 
     st.markdown("---")
@@ -209,6 +213,7 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
             "max_results":  max_results,
         }
         st.session_state.search_batch = 0
+        st.session_state.seen_urls = set()   # reset seen URLs on a fresh search
 
     params = st.session_state.auto_params
     batch  = st.session_state.search_batch
@@ -227,11 +232,22 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
         params["dosage_forms"], params["product_name"],
         params["requirements"], params["max_results"],
         batch=batch,
+        already_seen=st.session_state.seen_urls,
     )
 
+    # Record all URLs we just tried so future batches skip them
+    for h in search_hits:
+        st.session_state.seen_urls.add(h["url"])
+
     if not search_hits:
-        st.warning("No search results returned. Try different dosage forms or broaden requirements.")
-        st.stop()
+        if st.session_state.auto_continue:
+            # No new URLs this batch — advance and try next hub
+            st.session_state.search_batch = batch + 1
+            import time as _time; _time.sleep(1)
+            st.rerun()
+        else:
+            st.warning("No new results found. Try different dosage forms or requirements.")
+            st.stop()
 
     status.markdown(f"📄 **Found {len(search_hits)} candidate pages.** Extracting with Claude…")
     progress_bar.progress(18)

@@ -100,24 +100,25 @@ def search_cmos(
     product_name: str = "",
     requirements: str = "",
     max_results: int = 20,
-    batch: int = 0,                  # increments each auto-continue run
+    batch: int = 0,
+    already_seen: set[str] | None = None,   # URLs processed in previous batches
 ) -> list[dict]:
     """
     Search DuckDuckGo for Indian TPM/CMO/CDMO manufacturers.
-    `batch` rotates the hub group so each run finds different companies.
-    Returns list of dicts: url, title, snippet, dosage_form
+    `batch`        — rotates hub group so each run targets a different pharma cluster.
+    `already_seen` — URLs from prior batches; skipped so every batch finds fresh pages.
     """
-    hub_group = HUB_GROUPS[batch % len(HUB_GROUPS)]
+    hub_group  = HUB_GROUPS[batch % len(HUB_GROUPS)]
+    seen_urls  = set(already_seen or [])     # start with previously processed URLs
     all_results: list[dict] = []
-    seen_urls: set[str] = set()
 
     with DDGS() as ddgs:
         for form in dosage_forms:
             queries = _build_queries(form, product_name, requirements, hub_group)
 
-            for query in queries[:5]:
+            for query in queries[:6]:           # more queries per batch
                 try:
-                    hits = list(ddgs.text(query, region="in-en", max_results=6))
+                    hits = list(ddgs.text(query, region="in-en", max_results=8))  # more per query
                     for hit in hits:
                         url   = hit.get("href", "")
                         title = hit.get("title", "")
@@ -129,9 +130,9 @@ def search_cmos(
                             continue
                         seen_urls.add(url)
                         all_results.append({
-                            "url":        url,
-                            "title":      title,
-                            "snippet":    hit.get("body", ""),
+                            "url":         url,
+                            "title":       title,
+                            "snippet":     hit.get("body", ""),
                             "dosage_form": form,
                         })
                     time.sleep(0.5)
