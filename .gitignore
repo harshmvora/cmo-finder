@@ -1,0 +1,26 @@
+# Local config (contains API key — never commit this)
+cmo-finder/.cmo_config.json
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Claude local files (keep .claude/launch.json but not local caches)
+.claude/projects/
