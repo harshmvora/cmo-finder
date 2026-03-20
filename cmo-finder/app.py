@@ -99,13 +99,17 @@ if "_pers_loaded" not in st.session_state:
     st.session_state._save_error    = ""
     st.session_state._pers_loaded   = True
 
-# Standard session state defaults
+# Standard session state defaults (covers reruns where _pers_loaded block is skipped)
 for _k, _v in [
-    ("pending_lookup", None),
-    ("search_batch",   0),
-    ("auto_continue",  False),
-    ("auto_params",    {}),
-    ("seen_urls",      set()),
+    ("pending_lookup",  None),
+    ("search_batch",    0),
+    ("auto_continue",   False),
+    ("auto_params",     {}),
+    ("seen_urls",       set()),
+    ("_save_error",     ""),
+    ("_last_saved",     ""),
+    ("_seen_by_key",    {}),
+    ("_batch_by_key",   {}),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
