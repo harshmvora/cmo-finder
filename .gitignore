@@ -1,5 +1,8 @@
 # Local config (contains API key — never commit this)
 cmo-finder/.cmo_config.json
+
+# Persistent search data (user data — not part of source code)
+cmo-finder/data/
 .env
 
 # Python

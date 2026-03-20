@@ -16,6 +16,7 @@ from ddgs import DDGS
 from agent.extractor import extract_from_rich, extract_from_snippet
 from agent.scraper import scrape_rich
 from agent.searcher import DOSAGE_FORM_KEYWORDS, HUB_GROUPS, search_cmos, search_company_contacts
+from agent import persistence
 
 # ── Config persistence (saves API key locally so user doesn't re-enter it) ───
 CONFIG_PATH = Path(__file__).parent / ".cmo_config.json"
@@ -65,6 +66,7 @@ st.markdown("""
 }
 .pill-green { background: #dcfce7; color: #166534; }
 .pill-blue  { background: #dbeafe; color: #1e40af; }
+.pill-gray  { background: #f1f5f9; color: #475569; }
 .section-label {
     font-size: 11px; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.5px; color: #64748b; margin: 10px 0 3px;
@@ -74,25 +76,41 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state ─────────────────────────────────────────────────────────────
-if "results" not in st.session_state:
-    st.session_state.results: list[dict] = []
-if "pending_lookup" not in st.session_state:
-    st.session_state.pending_lookup = None
-if "search_batch" not in st.session_state:
-    st.session_state.search_batch = 0        # increments each auto-continue run
-if "auto_continue" not in st.session_state:
-    st.session_state.auto_continue = False
-if "auto_params" not in st.session_state:
-    st.session_state.auto_params = {}        # stores last search params for auto-continue
-if "seen_urls" not in st.session_state:
-    st.session_state.seen_urls: set[str] = set()   # URLs already processed (cross-batch)
+# ── Boot: load persistent state once per session ──────────────────────────────
+# This runs only the first time a browser tab opens the app.
+# Subsequent reruns (auto-continue, button clicks) skip this block.
+if "_pers_loaded" not in st.session_state:
+    _disk = persistence.load()
+    st.session_state.results      = _disk["results"]
+    st.session_state._seen_by_key = {k: set(v) for k, v in _disk["seen_by_key"].items()}
+    st.session_state._batch_by_key = dict(_disk["batch_by_key"])
+    st.session_state._last_saved  = _disk.get("last_saved", "")
+    st.session_state._pers_loaded = True
+
+# Standard session state defaults
+if "pending_lookup"  not in st.session_state:
+    st.session_state.pending_lookup  = None
+if "search_batch"    not in st.session_state:
+    st.session_state.search_batch    = 0
+if "auto_continue"   not in st.session_state:
+    st.session_state.auto_continue   = False
+if "auto_params"     not in st.session_state:
+    st.session_state.auto_params     = {}
+# seen_urls is now per-key; keep a flat set for the current search run
+if "seen_urls"       not in st.session_state:
+    st.session_state.seen_urls       = set()
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown("""
+total_saved = len(st.session_state.results)
+last_saved  = st.session_state._last_saved
+
+st.markdown(f"""
 <div class="header-banner">
   <h1>🏭 CMO &amp; CDMO Finder — India</h1>
-  <p>AI-powered search · Scrapes plant address &amp; contacts from multiple sources · Deep contact-page hunting</p>
+  <p>AI-powered search · Scrapes plant address &amp; contacts · Deep contact-page hunting
+  {'&nbsp;·&nbsp;<strong>' + str(total_saved) + ' manufacturers in database</strong>' if total_saved else ''}
+  {'&nbsp;·&nbsp;last saved ' + last_saved if last_saved else ''}
+  </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -106,7 +124,6 @@ with st.sidebar:
         value=_default_api_key(),
         help="Saved locally — you won't need to re-enter it next time",
     )
-    # Save whenever the key changes (local dev only — on Cloud it comes from st.secrets)
     if api_key and api_key != _config.get("api_key", ""):
         _save_config({**_config, "api_key": api_key})
 
@@ -129,6 +146,15 @@ with st.sidebar:
         ["WHO-GMP", "USFDA", "EU GMP", "ISO 9001", "CGMP", "ISO 14001"],
     )
 
+    # ── Search history panel ──────────────────────────────────────────────────
+    if st.session_state._batch_by_key:
+        st.divider()
+        st.markdown("### 📊 Search History")
+        for skey, batches in sorted(st.session_state._batch_by_key.items(), key=lambda x: -x[1]):
+            seen_count = len(st.session_state._seen_by_key.get(skey, set()))
+            label = persistence.key_label(skey)
+            st.caption(f"**{label}**  \n{batches} batch{'es' if batches != 1 else ''} · {seen_count} URLs tried")
+
     st.divider()
     st.markdown("### 🔄 Auto-Continue")
     auto_continue = st.toggle(
@@ -137,17 +163,22 @@ with st.sidebar:
         help="Automatically runs a new search batch after each one completes, rotating through different Indian pharma hubs.",
     )
     st.session_state.auto_continue = auto_continue
-    if auto_continue:
+    if auto_continue and st.session_state.auto_params:
         hub_idx = st.session_state.search_batch % len(HUB_GROUPS)
         st.caption(f"Batch #{st.session_state.search_batch + 1} · Hub: {HUB_GROUPS[hub_idx]}")
 
     st.divider()
     if st.button("🗑️ Clear All Results", use_container_width=True):
-        st.session_state.results = []
-        st.session_state.pending_lookup = None
-        st.session_state.search_batch = 0
-        st.session_state.auto_continue = False
-        st.session_state.seen_urls = set()
+        st.session_state.results         = []
+        st.session_state._seen_by_key    = {}
+        st.session_state._batch_by_key   = {}
+        st.session_state.seen_urls       = set()
+        st.session_state.pending_lookup  = None
+        st.session_state.search_batch    = 0
+        st.session_state.auto_continue   = False
+        st.session_state.auto_params     = {}
+        st.session_state._last_saved     = ""
+        persistence.clear()
         st.rerun()
 
     st.markdown("---")
@@ -178,6 +209,18 @@ with col_req:
         height=68, label_visibility="collapsed",
     )
 
+# Show how many batches already done for this search context
+if dosage_forms:
+    _preview_key = persistence.make_key(dosage_forms, product_name)
+    _done_batches = st.session_state._batch_by_key.get(_preview_key, 0)
+    _done_urls    = len(st.session_state._seen_by_key.get(_preview_key, set()))
+    if _done_batches:
+        st.info(
+            f"📂 **Resuming** — {_done_batches} batch{'es' if _done_batches != 1 else ''} already done "
+            f"for *{persistence.key_label(_preview_key)}* · {_done_urls} URLs already tried. "
+            f"New search will continue from batch #{_done_batches + 1}."
+        )
+
 # ── Search button ─────────────────────────────────────────────────────────────
 _, btn_col, stop_col, _ = st.columns([1, 2, 1, 1])
 with btn_col:
@@ -193,30 +236,37 @@ with stop_col:
 if not api_key:
     st.info("👈  Enter your Claude API key in the sidebar to get started.")
 
-# Auto-continue: treat it like a search click if params are stored
+# Auto-continue: trigger if params are stored and auto mode is on
 _auto_trigger = (
     st.session_state.auto_continue
     and st.session_state.auto_params
     and not search_clicked
 )
 
-# ── Search execution ──────────────────────────────────────────────────────────
+# ── Search execution ───────────────────────────────────────────────────────────
 if (search_clicked or _auto_trigger) and api_key and dosage_forms:
     client = anthropic.Anthropic(api_key=api_key)
 
-    # Save params for auto-continue to reuse
     if search_clicked:
+        # Build a stable key for this search context
+        skey = persistence.make_key(dosage_forms, product_name)
+
+        # Restore batch counter + seen URLs from persistent state for this key
+        # so we continue from where we left off (not start from scratch)
+        st.session_state.search_batch = st.session_state._batch_by_key.get(skey, 0)
+        st.session_state.seen_urls    = set(st.session_state._seen_by_key.get(skey, set()))
+
         st.session_state.auto_params = {
             "dosage_forms": dosage_forms,
             "product_name": product_name,
             "requirements": requirements,
             "max_results":  max_results,
+            "search_key":   skey,
         }
-        st.session_state.search_batch = 0
-        st.session_state.seen_urls = set()  # reset seen URLs on a fresh search
 
     params = st.session_state.auto_params
     batch  = st.session_state.search_batch
+    skey   = params["search_key"]
 
     progress_bar = st.progress(0)
     status = st.empty()
@@ -224,7 +274,8 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
 
     hub_idx = batch % len(HUB_GROUPS)
     status.markdown(
-        f"🔎 **Batch #{batch + 1}** · Searching hub: *{HUB_GROUPS[hub_idx]}*…"
+        f"🔎 **Batch #{batch + 1}** · Hub: *{HUB_GROUPS[hub_idx]}* · "
+        f"Key: *{persistence.key_label(skey)}*"
     )
     progress_bar.progress(8)
 
@@ -240,7 +291,7 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
         st.error(f"Search error: {search_err}")
         st.stop()
 
-    # Record all URLs we just tried (assign new set — avoids Streamlit proxy mutation issues)
+    # Update seen URLs for this key (assign new set — no in-place mutation)
     new_seen = set(st.session_state.seen_urls)
     for h in search_hits:
         new_seen.add(h["url"])
@@ -248,8 +299,14 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
 
     if not search_hits:
         if st.session_state.auto_continue:
-            # No new URLs this batch — advance and try next hub
-            st.session_state.search_batch = batch + 1
+            st.session_state.search_batch        = batch + 1
+            st.session_state._batch_by_key[skey] = batch + 1
+            st.session_state._seen_by_key[skey]  = new_seen
+            persistence.save({
+                "results":      st.session_state.results,
+                "seen_by_key":  {k: list(v) for k, v in st.session_state._seen_by_key.items()},
+                "batch_by_key": st.session_state._batch_by_key,
+            })
             import time as _time; _time.sleep(1)
             st.rerun()
         else:
@@ -265,8 +322,7 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
         status.markdown(f"🤖 **{i+1}/{total}** — *{hit['title'][:70]}*")
 
         extracted = None
-
-        dosage_context = f"{hit['dosage_form']}" + (f" — {params['product_name']}" if params.get('product_name') else "")
+        dosage_context = hit["dosage_form"] + (f" — {params['product_name']}" if params.get("product_name") else "")
 
         if deep_scrape:
             scraped = scrape_rich(hit["url"], follow_contact=True)
@@ -280,13 +336,14 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
 
         if extracted and extracted.get("company_name"):
             extracted["searched_dosage_form"] = hit["dosage_form"]
-            extracted["found_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            extracted["search_key"]           = skey         # tag with search context
+            extracted["found_at"]             = datetime.now().strftime("%Y-%m-%d %H:%M")
             new_results.append(extracted)
 
     progress_bar.progress(100)
-    status.markdown(f"✅ **Done!** Identified **{len(new_results)}** manufacturers.")
+    status.markdown(f"✅ **Done!** Identified **{len(new_results)}** manufacturers this batch.")
 
-    # Deduplicate and add
+    # ── Deduplicate and add to CUMULATIVE list ────────────────────────────────
     existing = {r.get("company_name", "").strip().lower() for r in st.session_state.results}
     added = 0
     for r in new_results:
@@ -297,19 +354,32 @@ if (search_clicked or _auto_trigger) and api_key and dosage_forms:
             added += 1
 
     if added:
-        st.success(f"Added {added} new manufacturer(s) to results (Batch #{batch + 1}).")
+        st.success(
+            f"✅ Added **{added}** new manufacturer(s) — "
+            f"**{len(st.session_state.results)} total** in database."
+        )
 
-    # Advance batch counter and auto-rerun if enabled
-    st.session_state.search_batch = batch + 1
+    # ── Update per-key counters and persist to disk ───────────────────────────
+    st.session_state._seen_by_key[skey]  = new_seen
+    st.session_state._batch_by_key[skey] = batch + 1
+    st.session_state.search_batch        = batch + 1
+
+    persistence.save({
+        "results":      st.session_state.results,
+        "seen_by_key":  {k: list(v) for k, v in st.session_state._seen_by_key.items()},
+        "batch_by_key": st.session_state._batch_by_key,
+    })
+    st.session_state._last_saved = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     if st.session_state.auto_continue:
         import time as _time
-        _time.sleep(2)   # brief pause between batches
+        _time.sleep(2)
         st.rerun()
 
 # ── Results section ───────────────────────────────────────────────────────────
 if st.session_state.results:
 
-    # ── Handle pending contact lookup (triggered by per-card button) ──────────
+    # ── Handle pending contact lookup ─────────────────────────────────────────
     if st.session_state.pending_lookup is not None and api_key:
         idx = st.session_state.pending_lookup
         st.session_state.pending_lookup = None
@@ -335,10 +405,16 @@ if st.session_state.results:
                     if scraped.get("gst") and not r.get("gst"):
                         r["gst"] = scraped["gst"]
                     if scraped.get("phones") or scraped.get("emails"):
-                        break   # one good hit is enough
+                        break
 
                 st.session_state.results[idx] = r
-                st.success("Contact details updated!")
+                # Persist the updated contact details
+                persistence.save({
+                    "results":      st.session_state.results,
+                    "seen_by_key":  {k: list(v) for k, v in st.session_state._seen_by_key.items()},
+                    "batch_by_key": st.session_state._batch_by_key,
+                })
+                st.success("Contact details updated and saved!")
             except Exception as e:
                 st.warning(f"Contact lookup failed: {e}")
 
@@ -356,9 +432,20 @@ if st.session_state.results:
             return all(c.upper() in s for c in cert_filter)
         display = [r for r in display if _has_certs(r)]
 
+    # ── Search-key filter (show only results for a specific search) ───────────
+    all_keys = sorted({r.get("search_key", "") for r in st.session_state.results if r.get("search_key")})
+    if len(all_keys) > 1:
+        key_options = ["All searches"] + [persistence.key_label(k) for k in all_keys]
+        selected_label = st.selectbox("🔍 Filter by search context", key_options)
+        if selected_label != "All searches":
+            # Map label back to key
+            selected_key = next((k for k in all_keys if persistence.key_label(k) == selected_label), None)
+            if selected_key:
+                display = [r for r in display if r.get("search_key") == selected_key]
+
     # ── Metrics ───────────────────────────────────────────────────────────────
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Found", len(st.session_state.results))
+    m1.metric("Total in Database", len(st.session_state.results))
     m2.metric("With Contact", sum(1 for r in st.session_state.results if r.get("phone") or r.get("email")))
     m3.metric("With Address", sum(1 for r in st.session_state.results if r.get("plant_address")))
     m4.metric("Showing", len(display))
@@ -405,7 +492,6 @@ if st.session_state.results:
     else:
         # ── Card view ─────────────────────────────────────────────────────────
         for card_i, r in enumerate(display):
-            # Find the true index in session_state.results for contact lookup
             true_idx = next(
                 (j for j, x in enumerate(st.session_state.results)
                  if x.get("company_name") == r.get("company_name")),
@@ -441,7 +527,6 @@ if st.session_state.results:
                         lines.append(f"👤 {r['contact_person']}")
                     if r.get("phone"):
                         lines.append(f"📱 {r['phone']}")
-                    # Show additional phones if found
                     for extra in (r.get("all_phones") or [])[1:3]:
                         lines.append(f"📱 {extra}")
                     if r.get("email"):
@@ -450,7 +535,6 @@ if st.session_state.results:
                         lines.append(f"🌐 [{r['website']}]({r['website']})")
                     st.markdown("\n\n".join(lines) if lines else "—")
 
-                    # Contact lookup button
                     missing = not r.get("phone") and not r.get("email")
                     btn_label = "🔍 Find Contacts" if missing else "🔄 Refresh Contacts"
                     if st.button(btn_label, key=f"lookup_{true_idx}", use_container_width=True):
@@ -484,6 +568,11 @@ if st.session_state.results:
                         st.markdown('<div class="section-label">🔬 Specialisation</div>', unsafe_allow_html=True)
                         st.write(r["specialisation"])
 
+                    # Show which search found this company
+                    if r.get("search_key"):
+                        st.markdown('<div class="section-label">🔎 Found via</div>', unsafe_allow_html=True)
+                        st.markdown(f'<span class="pill pill-gray">{persistence.key_label(r["search_key"])}</span>', unsafe_allow_html=True)
+
                 if r.get("description"):
                     st.markdown('<div class="section-label">📝 About</div>', unsafe_allow_html=True)
                     st.write(r["description"])
@@ -502,5 +591,6 @@ else:
     The agent hunts across DuckDuckGo, IndiaMART, PharmaBiz and company websites,
     follows /contact-us pages, and extracts phone numbers and plant addresses automatically.
   </p>
+  <p style="font-size:13px;">Results are <strong>saved to disk</strong> — they'll still be here next time you open the app.</p>
 </div>
 """, unsafe_allow_html=True)
