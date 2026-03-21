@@ -4,6 +4,8 @@ Pre-populates phones/emails/address from scraper data so Claude
 focuses only on fields that require language understanding.
 """
 
+from __future__ import annotations  # makes all type hints lazy strings — fixes Python 3.9 compat
+
 import json
 import re
 from typing import Optional

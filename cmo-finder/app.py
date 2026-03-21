@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from ddgs import DDGS
 
-from agent.extractor import extract_from_rich, extract_from_snippet, get_last_error, REASON_NOT_TPM, REASON_API_ERR
+from agent.extractor import extract_from_rich, extract_from_snippet, get_last_error
 from agent.scraper import scrape_rich
 from agent.searcher import DOSAGE_FORM_KEYWORDS, HUB_GROUPS, search_cmos, search_company_contacts
 from agent import persistence
@@ -365,9 +365,9 @@ with tab_search:
                     hit["title"], hit["snippet"], hit["url"], dosage_ctx, client
                 )
 
-            if reason == REASON_NOT_TPM:
+            if reason == "not_tpm":
                 stat_not_tpm += 1
-            elif reason == REASON_API_ERR:
+            elif reason == "api_error":
                 stat_api_err += 1
             elif extracted and extracted.get("company_name"):
                 stat_claude_ok += 1
