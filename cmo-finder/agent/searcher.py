@@ -76,22 +76,36 @@ def _build_queries(dosage_form: str, product_name: str, requirements: str, hub_g
     primary = kws[0]
     product_term = f'"{product_name}"' if product_name else primary
 
-    # Core terminology: use Indian-specific TPM terms, NOT generic "manufacturer"
-    queries = [
-        # Indian term: "third party manufacturing"
-        f'"third party manufacturing" {product_term} India WHO-GMP contact address phone',
-        f'"third party manufacturer" {product_term} India small company contact',
-        # Loan licence — another Indian regulatory term for contract manufacturing
-        f'"loan licence" OR "loan license" {product_term} India pharmaceutical contact address',
-        # Hub-rotated — finds different companies each batch
-        f'"third party manufacturing" {product_term} {hub_group} contact phone address',
-        # B2B directories — these list SMEs not big pharma
-        f'{product_term} "third party" pharma manufacturer {PRIORITY_DOMAINS[0]} OR {PRIORITY_DOMAINS[1]}',
-        f'{product_term} "contract manufacturing" "WHO-GMP" India SME contact {hub_group}',
-    ]
+    # Detect nutraceutical / supplement / herbal searches
+    nutra_forms = {"Nutraceuticals / Supplements"}
+    is_nutra = dosage_form in nutra_forms or any(
+        w in primary.lower() for w in ["nutra", "supplement", "vitamin", "herbal", "ayurvedic"]
+    )
+
+    if is_nutra:
+        # Nutraceutical industry uses "private label", "white label", "contract manufacturing"
+        # NOT pharma-specific "loan licence" / "third party manufacturing"
+        queries = [
+            f'"private label" {product_term} manufacturer India contact address phone',
+            f'"white label" {product_term} nutraceutical manufacturer India contact',
+            f'"contract manufacturing" {product_term} supplement India {hub_group} contact',
+            f'{product_term} "private label" nutraceutical India GMP FSSAI contact address',
+            f'{product_term} nutraceutical manufacturer {hub_group} contact phone email',
+            f'{product_term} "third party manufacturing" supplement India contact address',
+        ]
+    else:
+        # Standard pharma — use Indian-specific TPM / loan licence terms
+        queries = [
+            f'"third party manufacturing" {product_term} India WHO-GMP contact address phone',
+            f'"third party manufacturer" {product_term} India small company contact',
+            f'"loan licence" OR "loan license" {product_term} India pharmaceutical contact address',
+            f'"third party manufacturing" {product_term} {hub_group} contact phone address',
+            f'{product_term} "third party" pharma manufacturer {PRIORITY_DOMAINS[0]} OR {PRIORITY_DOMAINS[1]}',
+            f'{product_term} "contract manufacturing" "WHO-GMP" India SME contact {hub_group}',
+        ]
 
     if requirements:
-        queries.append(f'"third party manufacturing" {product_term} {requirements} India contact address')
+        queries.append(f'"contract manufacturing" {product_term} {requirements} India contact address')
 
     return queries
 

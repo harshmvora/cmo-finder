@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 from ddgs import DDGS
 
-from agent.extractor import extract_from_rich, extract_from_snippet
+from agent.extractor import extract_from_rich, extract_from_snippet, get_last_error, REASON_NOT_TPM, REASON_API_ERR
 from agent.scraper import scrape_rich
 from agent.searcher import DOSAGE_FORM_KEYWORDS, HUB_GROUPS, search_cmos, search_company_contacts
 from agent import persistence
@@ -339,12 +339,15 @@ with tab_search:
         progress_bar.progress(18)
 
         new_results: list[dict] = []
+        stat_scraped = stat_claude_ok = stat_not_tpm = stat_api_err = stat_scrape_fail = 0
         total = len(search_hits)
+
         for i, hit in enumerate(search_hits):
             progress_bar.progress(18 + int((i / total) * 78))
             status.markdown(f"🤖 **{i+1}/{total}** — *{hit['title'][:70]}*")
 
             extracted  = None
+            reason     = ""
             dosage_ctx = hit["dosage_form"] + (
                 f" — {params['product_name']}" if params.get("product_name") else ""
             )
@@ -352,21 +355,47 @@ with tab_search:
             if deep_scrape:
                 scraped = scrape_rich(hit["url"], follow_contact=True)
                 if scraped:
-                    extracted = extract_from_rich(scraped, hit["url"], dosage_ctx, client)
+                    stat_scraped += 1
+                    extracted, reason = extract_from_rich(scraped, hit["url"], dosage_ctx, client)
+                else:
+                    stat_scrape_fail += 1
 
             if not extracted and hit.get("snippet"):
-                extracted = extract_from_snippet(
+                extracted, reason = extract_from_snippet(
                     hit["title"], hit["snippet"], hit["url"], dosage_ctx, client
                 )
 
-            if extracted and extracted.get("company_name"):
+            if reason == REASON_NOT_TPM:
+                stat_not_tpm += 1
+            elif reason == REASON_API_ERR:
+                stat_api_err += 1
+            elif extracted and extracted.get("company_name"):
+                stat_claude_ok += 1
                 extracted["searched_dosage_form"] = hit["dosage_form"]
                 extracted["search_key"]           = skey
                 extracted["found_at"]             = datetime.now().strftime("%Y-%m-%d %H:%M")
                 new_results.append(extracted)
 
         progress_bar.progress(100)
-        status.markdown(f"✅ **Done!** Extracted **{len(new_results)}** manufacturers this batch.")
+
+        # ── Diagnostic summary ────────────────────────────────────────────────
+        api_err_msg = get_last_error()
+        if api_err_msg:
+            status.markdown(f"⚠️ **Claude API error:** `{api_err_msg}`")
+            st.error(
+                f"Claude API is returning errors: **{api_err_msg}**\n\n"
+                "Check your API key in the sidebar — it may have expired or be invalid."
+            )
+        else:
+            diag_parts = [
+                f"**{total}** URLs tried",
+                f"**{stat_scraped}** scraped",
+                f"**{stat_claude_ok}** passed AI filter",
+                f"**{stat_not_tpm}** rejected (not TPM/contract mfr)",
+            ]
+            if stat_api_err:  diag_parts.append(f"**{stat_api_err}** Claude errors")
+            if stat_scrape_fail: diag_parts.append(f"**{stat_scrape_fail}** scrape failures")
+            status.markdown(f"✅ **Batch done:** " + " · ".join(diag_parts))
 
         # Deduplicate and accumulate into shared db
         existing = {r.get("company_name", "").strip().lower() for r in db["results"]}

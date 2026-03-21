@@ -13,15 +13,23 @@ import anthropic
 MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM = (
-    "You are an expert researcher specialising in Indian pharmaceutical contract manufacturers. "
-    "You extract structured data from web content about CMOs and CDMOs. "
+    "You are an expert researcher specialising in Indian pharmaceutical and nutraceutical "
+    "contract manufacturers. You extract structured data from web content about CMOs, CDMOs, "
+    "and private-label / white-label manufacturers. "
     "Return ONLY valid JSON — no markdown fences, no prose."
 )
 
 PROMPT_TEMPLATE = """\
-Extract information about an Indian THIRD-PARTY / CONTRACT pharmaceutical manufacturer from the content below.
-We are ONLY interested in SME companies that manufacture FOR other brands (CMO / CDMO / TPM / loan licence).
-We do NOT want large branded pharma companies (Sun Pharma, Cipla, Lupin, Dr. Reddy's, Aurobindo, Cadila, Zydus, Torrent, Alkem, Mankind, Glenmark, Abbott, Pfizer, Novartis, GSK, Sanofi, IPCA, Wockhardt, Emcure, Biocon, Jubilant, Piramal, Intas, Laurus Labs, Divi's, Granules, etc.).
+Extract information about an Indian CONTRACT / THIRD-PARTY manufacturer from the content below.
+
+We are looking for companies that manufacture FOR other brands. This includes:
+  • Pharmaceutical CMOs / CDMOs / TPM (third-party manufacturing / loan licence)
+  • Nutraceutical / supplement CONTRACT or PRIVATE-LABEL / WHITE-LABEL manufacturers
+  • Any Indian SME that makes products under another company's brand name
+
+We do NOT want large branded pharma companies (Sun Pharma, Cipla, Lupin, Dr. Reddy's,
+Aurobindo, Cadila/Zydus, Torrent, Alkem, Mankind, Glenmark, Abbott, Pfizer, Novartis,
+GSK, Sanofi, IPCA, Wockhardt, Emcure, Biocon, Jubilant, Piramal, Intas, Laurus, Divi's, Granules).
 
 ALREADY EXTRACTED (trust these, do not ignore them):
 {pre_extracted}
@@ -37,22 +45,28 @@ Return a single JSON object (use null for missing fields):
   "phone":             "string — use pre-extracted if available",
   "email":             "string — use pre-extracted if available",
   "website":           "string",
-  "dosage_forms":      ["list of dosage forms they manufacture for third parties"],
-  "certifications":    ["WHO-GMP", "USFDA", "EU GMP", "ISO 9001", etc.],
+  "dosage_forms":      ["list of dosage forms / product types they manufacture for others"],
+  "certifications":    ["WHO-GMP", "FSSAI", "USFDA", "ISO 9001", "GMP", etc.],
   "capacity":          "string — production capacity if mentioned",
   "min_order":         "string — minimum order quantity if mentioned",
-  "specialisation":    "string — niche e.g. hormones, oncology, controlled release",
-  "description":       "string — 2–3 sentences on their TPM/CMO capabilities",
+  "specialisation":    "string — e.g. softgels, protein supplements, herbal extracts",
+  "description":       "string — 2–3 sentences on their contract/private-label capabilities",
   "is_tpm":            true
 }}
 
-Set "is_tpm" to false if ANY of these apply:
-- This is a large/listed branded pharma company (see list above)
-- This is primarily a PCD/franchise company that SELLS products, not manufactures for others
-- This is a news article, job board, regulatory page, or generic directory with no specific company
-- The company clearly only manufactures its OWN branded products and does NOT offer third-party services
+Set "is_tpm" to TRUE if ANY of these apply:
+  ✓ Offers third-party manufacturing / loan licence manufacturing
+  ✓ Offers contract manufacturing for pharma or nutraceuticals
+  ✓ Offers private-label or white-label manufacturing
+  ✓ Makes products under other brands' names
+  ✓ Is a CMO / CDMO / toll manufacturer
 
-Set "is_tpm" to true if the company explicitly offers third-party manufacturing, loan licence manufacturing, or contract manufacturing services to other brands.
+Set "is_tpm" to FALSE only if ALL of these apply:
+  ✗ Is a large listed branded pharma company (see blacklist above)
+  ✗ OR is purely a trading/distribution company with no manufacturing
+  ✗ OR is a news article, job board, regulatory database, or empty directory page
+
+If the company does BOTH its own branded products AND contract manufacturing for others, set is_tpm = TRUE.
 
 Source URL: {url}
 Dosage form context: {dosage_form}
@@ -62,9 +76,16 @@ Dosage form context: {dosage_form}
 --- CONTENT END ---
 """
 
+# Module-level error tracker (single-user app — no thread-safety needed)
+_last_error: str = ""
+
+
+def get_last_error() -> str:
+    """Return the last Claude API error (empty string if last call succeeded)."""
+    return _last_error
+
 
 def _build_pre_extracted(scraped: dict) -> str:
-    """Format pre-extracted structured data as a clear string for Claude."""
     lines = []
     if scraped.get("phones"):
         lines.append(f"Phone numbers (from tel: links / regex): {', '.join(scraped['phones'])}")
@@ -81,7 +102,6 @@ def _build_pre_extracted(scraped: dict) -> str:
 
 def _parse_json(text: str) -> Optional[dict]:
     text = text.strip()
-    # Remove markdown code fences if present
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     try:
@@ -96,13 +116,25 @@ def _parse_json(text: str) -> Optional[dict]:
     return None
 
 
+# Rejection reason constants (returned instead of None so callers can count them)
+REASON_NOT_TPM   = "not_tpm"
+REASON_NO_NAME   = "no_name"
+REASON_PARSE_ERR = "parse_error"
+REASON_API_ERR   = "api_error"
+
+
 def _call_claude(
     content: str,
     pre_extracted: str,
     url: str,
     dosage_form: str,
     client: anthropic.Anthropic,
-) -> Optional[dict]:
+) -> tuple[Optional[dict], str]:
+    """
+    Returns (result_dict, reason).
+    result_dict is None on failure; reason is "" on success or one of REASON_* constants.
+    """
+    global _last_error
     prompt = PROMPT_TEMPLATE.format(
         pre_extracted=pre_extracted,
         url=url,
@@ -116,38 +148,32 @@ def _call_claude(
             system=SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
+        _last_error = ""
         data = _parse_json(msg.content[0].text)
         if not data:
-            return None
-        if not data.get("is_tpm", True):      # reject branded / non-TPM companies
-            return None
+            return None, REASON_PARSE_ERR
+        if not data.get("is_tpm", True):
+            return None, REASON_NOT_TPM
         if not data.get("company_name"):
-            return None
-        return data
-    except Exception:
-        return None
+            return None, REASON_NO_NAME
+        return data, ""
+    except Exception as e:
+        _last_error = str(e)
+        return None, REASON_API_ERR
 
 
 def _merge_scraped_into_result(result: dict, scraped: dict) -> dict:
-    """
-    Overwrite result fields with hard-extracted data from scraper when Claude missed them.
-    The scraper's tel:/mailto: links are more reliable than Claude's text-parsing.
-    """
     if scraped.get("phones") and not result.get("phone"):
         result["phone"] = scraped["phones"][0]
         result["all_phones"] = scraped["phones"]
     elif scraped.get("phones"):
         result["all_phones"] = scraped["phones"]
-
     if scraped.get("emails") and not result.get("email"):
         result["email"] = scraped["emails"][0]
-
     if scraped.get("gst") and not result.get("gst"):
         result["gst"] = scraped["gst"]
-
     if scraped.get("address_hints") and not result.get("plant_address"):
         result["plant_address"] = " | ".join(scraped["address_hints"][:2])
-
     return result
 
 
@@ -158,25 +184,20 @@ def extract_from_rich(
     url: str,
     dosage_form: str,
     client: anthropic.Anthropic,
-) -> Optional[dict]:
-    """
-    Full extraction from scrape_rich() output.
-    Uses pre-extracted contacts as ground truth, Claude fills the rest.
-    """
+) -> tuple[Optional[dict], str]:
+    """Returns (result, reason). reason="" on success."""
     pre_extracted = _build_pre_extracted(scraped)
-
-    # Combine main text + contact page text
     full_text = scraped.get("text", "")
     if scraped.get("contact_page_text"):
         full_text += "\n\n[FROM CONTACT PAGE]\n" + scraped["contact_page_text"]
 
-    result = _call_claude(full_text, pre_extracted, url, dosage_form, client)
+    result, reason = _call_claude(full_text, pre_extracted, url, dosage_form, client)
     if not result:
-        return None
+        return None, reason
 
     result = _merge_scraped_into_result(result, scraped)
     result["source_url"] = url
-    return result
+    return result, ""
 
 
 def extract_from_snippet(
@@ -185,14 +206,13 @@ def extract_from_snippet(
     url: str,
     dosage_form: str,
     client: anthropic.Anthropic,
-) -> Optional[dict]:
-    """Quick extraction from a search-result snippet (no page fetch)."""
+) -> tuple[Optional[dict], str]:
+    """Returns (result, reason). reason="" on success."""
     content = f"Page title: {title}\n\nSearch snippet: {snippet}"
-    pre = "None extracted yet."
-    result = _call_claude(content, pre, url, dosage_form, client)
+    result, reason = _call_claude(content, "None extracted yet.", url, dosage_form, client)
     if result:
         result["source_url"] = url
-    return result
+    return result, reason
 
 
 def extract_from_text(
@@ -200,9 +220,9 @@ def extract_from_text(
     url: str,
     dosage_form: str,
     client: anthropic.Anthropic,
-) -> Optional[dict]:
-    """Backward-compatible plain-text extraction (no scraper dict)."""
-    result = _call_claude(text, "None extracted yet.", url, dosage_form, client)
+) -> tuple[Optional[dict], str]:
+    """Backward-compatible plain-text extraction."""
+    result, reason = _call_claude(text, "None extracted yet.", url, dosage_form, client)
     if result:
         result["source_url"] = url
-    return result
+    return result, reason
