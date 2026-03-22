@@ -32,9 +32,9 @@ st.set_page_config(
 
 # ── Modern CSS with Inter font ─────────────────────────────────────────────────
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
-      rel="stylesheet">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
   html, body, [class*="css"], .stMarkdown, .stText, .stButton>button,
   input, select, textarea, label, p, h1, h2, h3, h4, h5, h6,
   .stTabs [data-baseweb="tab"], [data-testid="stMetricLabel"] {
