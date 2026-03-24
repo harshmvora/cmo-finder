@@ -71,6 +71,22 @@ def is_big_pharma(title: str, url: str) -> bool:
     return any(bp in text for bp in BIG_PHARMA_BLACKLIST)
 
 
+def _build_product_only_queries(product_name: str, requirements: str, hub_group: str) -> list[str]:
+    """Build queries when only a product name is given (no dosage form selected)."""
+    pt = f'"{product_name}"'
+    queries = [
+        f'"third party manufacturing" {pt} India contact address phone',
+        f'"contract manufacturing" {pt} India CMO CDMO contact',
+        f'{pt} manufacturer India WHO-GMP contact address phone',
+        f'"private label" OR "white label" {pt} manufacturer India contact',
+        f'{pt} "loan licence" OR "contract manufacturing" India pharmaceutical {hub_group}',
+        f'{pt} CMO CDMO India manufacturer contact {hub_group}',
+    ]
+    if requirements:
+        queries.append(f'{pt} {requirements} manufacturer India contact address')
+    return queries
+
+
 def _build_queries(dosage_form: str, product_name: str, requirements: str, hub_group: str) -> list[str]:
     kws = DOSAGE_FORM_KEYWORDS.get(dosage_form, [dosage_form.lower()])
     primary = kws[0]
@@ -127,32 +143,39 @@ def search_cmos(
     seen_urls  = set(already_seen or [])     # start with previously processed URLs
     all_results: list[dict] = []
 
-    with DDGS() as ddgs:
-        for form in dosage_forms:
-            queries = _build_queries(form, product_name, requirements, hub_group)
+    def _run_queries(queries: list[str], form_label: str) -> None:
+        for query in queries[:6]:
+            try:
+                hits = list(ddgs.text(query, region="in-en", max_results=8))
+                for hit in hits:
+                    url   = hit.get("href", "")
+                    title = hit.get("title", "")
+                    if not url or url in seen_urls:
+                        continue
+                    if any(d in url for d in SKIP_DOMAINS):
+                        continue
+                    if is_big_pharma(title, url):
+                        continue
+                    seen_urls.add(url)
+                    all_results.append({
+                        "url":         url,
+                        "title":       title,
+                        "snippet":     hit.get("body", ""),
+                        "dosage_form": form_label,
+                    })
+                time.sleep(0.5)
+            except Exception:
+                continue
 
-            for query in queries[:6]:           # more queries per batch
-                try:
-                    hits = list(ddgs.text(query, region="in-en", max_results=8))  # more per query
-                    for hit in hits:
-                        url   = hit.get("href", "")
-                        title = hit.get("title", "")
-                        if not url or url in seen_urls:
-                            continue
-                        if any(d in url for d in SKIP_DOMAINS):
-                            continue
-                        if is_big_pharma(title, url):
-                            continue
-                        seen_urls.add(url)
-                        all_results.append({
-                            "url":         url,
-                            "title":       title,
-                            "snippet":     hit.get("body", ""),
-                            "dosage_form": form,
-                        })
-                    time.sleep(0.5)
-                except Exception:
-                    continue
+    with DDGS() as ddgs:
+        if not dosage_forms:
+            # Product-only search — no dosage form selected
+            queries = _build_product_only_queries(product_name, requirements, hub_group)
+            _run_queries(queries, product_name)
+        else:
+            for form in dosage_forms:
+                queries = _build_queries(form, product_name, requirements, hub_group)
+                _run_queries(queries, form)
 
     return all_results[:max_results]
 

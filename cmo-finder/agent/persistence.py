@@ -107,15 +107,19 @@ def make_key(dosage_forms: list[str], product_name: str) -> str:
       dosage_forms=["Tablets"]            → "Tablets"
       dosage_forms=["Tablets","Capsules"] → "Capsules|Tablets"
       product_name="Metformin 500mg"      → "Tablets :: metformin 500mg"
+      dosage_forms=[], product="Whey"     → "product :: whey"
     """
+    pname = product_name.strip().lower() if product_name and product_name.strip() else ""
+    if not dosage_forms:
+        return f"product :: {pname}" if pname else "general"
     forms = "|".join(sorted(dosage_forms))
-    if product_name and product_name.strip():
-        return f"{forms} :: {product_name.strip().lower()}"
-    return forms
+    return f"{forms} :: {pname}" if pname else forms
 
 
 def key_label(search_key: str) -> str:
     """Human-readable version of make_key output for display."""
+    if search_key.startswith("product :: "):
+        return search_key[len("product :: "):].title()
     if " :: " in search_key:
         forms_part, product = search_key.split(" :: ", 1)
         return f"{forms_part.replace('|', ', ')} — {product.title()}"

@@ -223,9 +223,9 @@ def _background_worker(params: dict) -> None:
             for hit in hits:
                 if not bg["running"]:
                     break
-                dosage_ctx = hit["dosage_form"] + (
-                    f" — {params['product_name']}" if params.get("product_name") else ""
-                )
+                dosage_ctx = hit["dosage_form"]
+                if params.get("product_name") and hit["dosage_form"] != params["product_name"]:
+                    dosage_ctx += f" — {params['product_name']}"
                 extracted = None
 
                 scraped = scrape_rich(hit["url"], follow_contact=True)
@@ -374,15 +374,14 @@ with tab_search:
     # ── Search form ────────────────────────────────────────────────────────────
     c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
-        dosage_forms = st.multiselect(
-            "💊 Dosage Form(s)",
-            list(DOSAGE_FORM_KEYWORDS.keys()),
-            default=["Nutraceuticals / Supplements"],
+        product_name = st.text_input(
+            "🧪 Product Name",
+            placeholder="e.g. Metformin 500mg, Whey Protein, Paracetamol…",
         )
     with c2:
-        product_name = st.text_input(
-            "🧪 Product Name *(optional)*",
-            placeholder="e.g. Whey Protein, Metformin 500mg…",
+        dosage_forms = st.multiselect(
+            "💊 Dosage Form(s) *(optional)*",
+            list(DOSAGE_FORM_KEYWORDS.keys()),
         )
     with c3:
         requirements = st.text_area(
@@ -391,8 +390,10 @@ with tab_search:
             height=70,
         )
 
+    can_search = bool(api_key and (product_name.strip() or dosage_forms))
+
     # Resume hint
-    if dosage_forms:
+    if product_name.strip() or dosage_forms:
         _skey  = persistence.make_key(dosage_forms, product_name)
         _done  = db["batch_by_key"].get(_skey, 0)
         _tried = len(db["seen_by_key"].get(_skey, set()))
@@ -402,31 +403,53 @@ with tab_search:
                 f"· {_tried} URLs tried · continuing from batch #{_done + 1}"
             )
 
-    # ── Action buttons ─────────────────────────────────────────────────────────
-    btn1, btn2, _ = st.columns([2, 2, 2])
+    search_clicked = st.button(
+        "🔍 Search Once",
+        type="primary",
+        disabled=not can_search,
+        help="Run one batch and show results immediately",
+    )
 
-    with btn1:
-        search_clicked = st.button(
-            "🔍 Search Once",
-            use_container_width=True,
-            type="primary",
-            disabled=not api_key or not dosage_forms,
-            help="Run one batch and show results immediately",
-        )
+    # ── Background Search — separate section, always visible ──────────────────
+    st.divider()
 
-    with btn2:
+    _bg_hdr, _bg_ctrl = st.columns([4, 1])
+    with _bg_hdr:
         if _is_bg_alive:
-            if st.button("⏹️ Stop Background", use_container_width=True):
+            _p = bg.get("params", {})
+            _parts: list[str] = []
+            if _p.get("product_name"):
+                _parts.append(f"<strong>{_p['product_name']}</strong>")
+            if _p.get("dosage_forms"):
+                _parts.append(", ".join(_p["dosage_forms"]))
+            _label = " · ".join(_parts) if _parts else "previous search"
+            st.markdown(
+                f'<div class="bg-on">🔄 <strong>Background search running</strong>'
+                f' &mdash; {_label}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="bg-off">⏸️ <strong>Background search</strong> &mdash; not running'
+                '<br><span style="color:#64748b;font-size:12px">'
+                'Runs continuously, survives browser close</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    with _bg_ctrl:
+        st.write("")  # vertical alignment spacer
+        if _is_bg_alive:
+            if st.button("⏹️ Stop", use_container_width=True, key="btn_bg_stop"):
                 _stop_bg()
                 st.rerun()
         else:
-            bg_start = st.button(
-                "🔄 Start Background Search",
+            if st.button(
+                "▶ Start",
                 use_container_width=True,
-                disabled=not api_key or not dosage_forms,
-                help="Searches continuously — keeps going even when you close this tab",
-            )
-            if bg_start:
+                key="btn_bg_start",
+                disabled=not can_search,
+                help="Start continuous background search with the form values above",
+            ):
                 _skey = persistence.make_key(dosage_forms, product_name)
                 _start_bg({
                     "api_key":      api_key,
@@ -438,31 +461,23 @@ with tab_search:
                 })
                 st.rerun()
 
-    # ── Background status (auto-refreshes every 10 s) ─────────────────────────
+    # Auto-refreshing log (only this fragment rerenders every 10 s)
     @st.fragment(run_every=10)
     def _bg_panel() -> None:
         bg  = _bg()
         db  = _db()
         alive = bg["running"] and bg["thread"] and bg["thread"].is_alive()
-        if not alive and not bg["log"]:
+        if not alive and not bg.get("log"):
             return
-        css = "bg-on" if alive else "bg-off"
-        icon = "🔄" if alive else "⏹️"
-        status = "running" if alive else "paused"
-        st.markdown(
-            f'<div class="{css}">'
-            f'<strong>{icon} Background search {status}</strong>'
-            f' — <span style="color:#475569">{len(db["results"])} manufacturers found</span>',
-            unsafe_allow_html=True,
-        )
-        for msg in bg["log"][:6]:
+        if alive:
+            st.caption(f"📊 {len(db['results'])} manufacturers found so far")
+        for msg in (bg.get("log") or [])[:6]:
             st.caption(msg)
-        st.markdown("</div>", unsafe_allow_html=True)
 
     _bg_panel()
 
     # ── One-shot search execution ──────────────────────────────────────────────
-    if search_clicked and api_key and dosage_forms:
+    if search_clicked and can_search:
         client = anthropic.Anthropic(api_key=api_key)
         skey   = persistence.make_key(dosage_forms, product_name)
         batch  = db["batch_by_key"].get(skey, 0)
@@ -501,7 +516,9 @@ with tab_search:
             prog.progress(18 + int((i / total) * 78))
             stat.markdown(f"🤖 **{i+1}/{total}** — *{hit['title'][:65]}*")
 
-            dosage_ctx = hit["dosage_form"] + (f" — {product_name}" if product_name else "")
+            dosage_ctx = hit["dosage_form"]
+            if product_name and hit["dosage_form"] != product_name:
+                dosage_ctx += f" — {product_name}"
             extracted  = None
             reason     = ""
 
