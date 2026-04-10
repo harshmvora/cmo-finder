@@ -452,15 +452,15 @@ with tab_search:
 
     c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
-        dosage_forms = st.multiselect(
-            "💊 Dosage Form(s)",
-            list(DOSAGE_FORM_KEYWORDS.keys()),
-            default=["Nutraceuticals / Supplements"],
+        product_name = st.text_input(
+            "🧪 Product Name",
+            placeholder="e.g. Whey Protein, Metformin 500mg…",
+            help="Search by product name alone, or combine with a dosage form below.",
         )
     with c2:
-        product_name = st.text_input(
-            "🧪 Product Name *(optional)*",
-            placeholder="e.g. Whey Protein, Metformin 500mg…",
+        dosage_forms = st.multiselect(
+            "💊 Dosage Form(s) *(optional)*",
+            list(DOSAGE_FORM_KEYWORDS.keys()),
         )
     with c3:
         requirements = st.text_area(
@@ -469,7 +469,9 @@ with tab_search:
             height=70,
         )
 
-    if dosage_forms:
+    _can_search = bool(api_key and (product_name.strip() or dosage_forms))
+
+    if product_name.strip() or dosage_forms:
         _skey  = persistence.make_key(dosage_forms, product_name)
         _done  = db["batch_by_key"].get(_skey, 0)
         _tried = len(db["seen_by_key"].get(_skey, set()))
@@ -485,7 +487,7 @@ with tab_search:
         search_clicked = st.button(
             "🔍 Search Once",
             use_container_width=True, type="primary",
-            disabled=not api_key or not dosage_forms,
+            disabled=not _can_search,
         )
     with btn2:
         if _is_bg_alive:
@@ -496,7 +498,7 @@ with tab_search:
             if st.button(
                 "🔄 Start Background Search",
                 use_container_width=True,
-                disabled=not api_key or not dosage_forms,
+                disabled=not _can_search,
                 help="Searches continuously — keeps going even when you close this tab",
             ):
                 _skey = persistence.make_key(dosage_forms, product_name)
@@ -533,7 +535,7 @@ with tab_search:
     _bg_panel()
 
     # ── One-shot search ────────────────────────────────────────────────────────
-    if search_clicked and api_key and dosage_forms:
+    if search_clicked and _can_search:
         client = anthropic.Anthropic(api_key=api_key)
         skey   = persistence.make_key(dosage_forms, product_name)
         batch  = db["batch_by_key"].get(skey, 0)
