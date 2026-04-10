@@ -24,14 +24,31 @@ SYSTEM = (
 PROMPT_TEMPLATE = """\
 Extract information about an Indian CONTRACT / THIRD-PARTY manufacturer from the content below.
 
-We are looking for companies that manufacture FOR other brands. This includes:
-  • Pharmaceutical CMOs / CDMOs / TPM (third-party manufacturing / loan licence)
-  • Nutraceutical / supplement CONTRACT or PRIVATE-LABEL / WHITE-LABEL manufacturers
-  • Any Indian SME that makes products under another company's brand name
+We are looking for companies that PHYSICALLY MANUFACTURE products for other brands. This means
+they have an actual production facility (plant, factory, manufacturing unit) in India and accept
+orders to produce under another company's brand/licence.
 
-We do NOT want large branded pharma companies (Sun Pharma, Cipla, Lupin, Dr. Reddy's,
-Aurobindo, Cadila/Zydus, Torrent, Alkem, Mankind, Glenmark, Abbott, Pfizer, Novartis,
-GSK, Sanofi, IPCA, Wockhardt, Emcure, Biocon, Jubilant, Piramal, Intas, Laurus, Divi's, Granules).
+HARD DISQUALIFIERS — set is_tpm = FALSE if the content matches any of these:
+  ✗ Large listed branded pharma (Sun Pharma, Cipla, Lupin, Dr. Reddy's, Aurobindo,
+    Cadila/Zydus, Torrent, Alkem, Mankind, Glenmark, Abbott, Pfizer, Novartis, GSK,
+    Sanofi, IPCA, Wockhardt, Emcure, Biocon, Jubilant, Piramal, Intas, Laurus, Divi's, Granules)
+  ✗ Pure trading / import-export / distribution / marketing company with no manufacturing
+  ✗ API / raw-material / excipient supplier that doesn't make finished dosage forms
+  ✗ Packaging / labelling / logistics / warehousing company
+  ✗ Consultant, CRO, regulatory affairs firm
+  ✗ News article, job board, directory listing, or regulatory database
+  ✗ Content is essentially empty / boilerplate / homepage with no company details
+
+REQUIRED POSITIVE EVIDENCE — to set is_tpm = TRUE, the content must show AT LEAST TWO of:
+  ✓ Explicit mention of contract / third-party / loan-licence / white-label / private-label manufacturing
+  ✓ Description of own manufacturing plant, factory, or production unit in India
+  ✓ GMP / WHO-GMP / USFDA / ISO manufacturing certification mentioned for their facility
+  ✓ Specific production capacity figures (e.g. units/month, tonnes/year)
+  ✓ List of dosage forms or product categories they produce on contract
+  ✓ Mention of minimum order quantity for contract orders
+  ✓ A contact/inquiry section specifically for contract manufacturing enquiries
+
+If only ONE positive signal exists and the content is thin, set is_tpm = FALSE.
 
 ALREADY EXTRACTED (trust these, do not ignore them):
 {pre_extracted}
@@ -53,22 +70,9 @@ Return a single JSON object (use null for missing fields):
   "min_order":         "string — minimum order quantity if mentioned",
   "specialisation":    "string — e.g. softgels, protein supplements, herbal extracts",
   "description":       "string — 2–3 sentences on their contract/private-label capabilities",
+  "mfg_evidence":      "string — quote the 1–2 specific phrases from the content that prove they are a real manufacturer",
   "is_tpm":            true
 }}
-
-Set "is_tpm" to TRUE if ANY of these apply:
-  ✓ Offers third-party manufacturing / loan licence manufacturing
-  ✓ Offers contract manufacturing for pharma or nutraceuticals
-  ✓ Offers private-label or white-label manufacturing
-  ✓ Makes products under other brands' names
-  ✓ Is a CMO / CDMO / toll manufacturer
-
-Set "is_tpm" to FALSE only if ALL of these apply:
-  ✗ Is a large listed branded pharma company (see blacklist above)
-  ✗ OR is purely a trading/distribution company with no manufacturing
-  ✗ OR is a news article, job board, regulatory database, or empty directory page
-
-If the company does BOTH its own branded products AND contract manufacturing for others, set is_tpm = TRUE.
 
 Source URL: {url}
 Dosage form context: {dosage_form}

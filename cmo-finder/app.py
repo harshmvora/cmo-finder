@@ -140,21 +140,20 @@ def _default_api_key() -> str:
 
 
 # ── Grade helpers ──────────────────────────────────────────────────────────────
-GRADES  = ["ungraded", "A", "B", "C", "Reject"]
-STATUSES = ["new", "contacted", "responded", "sampling", "active", "rejected"]
+GRADES = ["not called", "Helpful", "Not Helpful"]
 
-_GRADE_CSS   = {"A": "grade-a", "B": "grade-b", "C": "grade-c",
-                "Reject": "grade-r", "ungraded": "grade-u"}
-_GRADE_LABEL = {"A": "🟢 A — High Priority", "B": "🔵 B — Follow Up",
-                "C": "🟡 C — Low Priority", "Reject": "🔴 Reject",
-                "ungraded": "— Ungraded"}
-
-_GRADE_SORT = {"A": 0, "B": 1, "C": 2, "ungraded": 3, "Reject": 4}
+_GRADE_CSS = {
+    "Helpful":    "grade-a",
+    "Not Helpful":"grade-r",
+    "not called": "grade-u",
+}
+_GRADE_SORT = {"not called": 0, "Helpful": 1, "Not Helpful": 2}
 
 
 def _grade_badge(grade: str) -> str:
     css = _GRADE_CSS.get(grade, "grade-u")
-    return f'<span class="{css}">{grade or "—"}</span>'
+    label = grade or "not called"
+    return f'<span class="{css}">{label}</span>'
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -219,18 +218,17 @@ def _persist() -> None:
         db["last_saved"] = f"{src} · {datetime.now().strftime('%H:%M')}"
 
 
-def _save_grade(idx: int, grade: str, status: str, notes: str) -> str:
+def _save_grade(idx: int, grade: str, notes: str) -> str:
     """Update grade fields in-memory and push to Supabase. Returns error or ''."""
     db = _db()
     r = db["results"][idx]
     r["grade"]       = grade
-    r["status"]      = status
     r["grade_notes"] = notes
     r["graded_at"]   = datetime.now().strftime("%Y-%m-%d %H:%M")
     db["results"][idx] = r
 
     if supabase_db.is_configured():
-        return supabase_db.update_grade(r["company_name"], grade, status, notes)
+        return supabase_db.update_grade(r["company_name"], grade, "", notes)
     # Fallback — persist entire db locally
     _persist()
     return ""
@@ -312,8 +310,7 @@ def _background_worker(params: dict) -> None:
                             "searched_dosage_form": hit["dosage_form"],
                             "search_key":           skey,
                             "found_at":             datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "grade":                "ungraded",
-                            "status":               "new",
+                            "grade":                "not called",
                         })
                         db["results"].append(extracted)
                         existing.add(key)
@@ -423,7 +420,7 @@ with st.sidebar:
 # ── Header ─────────────────────────────────────────────────────────────────────
 _is_bg_alive = bg["running"] and bg["thread"] and bg["thread"].is_alive()
 _n = len(db["results"])
-_graded = sum(1 for r in db["results"] if r.get("grade", "ungraded") != "ungraded")
+_graded = sum(1 for r in db["results"] if r.get("grade", "not called") != "not called")
 
 _badges = ""
 if _n:
@@ -601,8 +598,7 @@ with tab_search:
                     "searched_dosage_form": hit["dosage_form"],
                     "search_key":           skey,
                     "found_at":             datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "grade":                "ungraded",
-                    "status":               "new",
+                    "grade":                "not called",
                 })
                 new_results.append(extracted)
 
@@ -750,12 +746,11 @@ Then redeploy — data will survive all future restarts.
 
     else:
         # ── Metrics ───────────────────────────────────────────────────────────
-        m1, m2, m3, m4, m5 = st.columns(5)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total",        len(db["results"]))
-        m2.metric("Grade A",  sum(1 for r in db["results"] if r.get("grade") == "A"))
-        m3.metric("Grade B",  sum(1 for r in db["results"] if r.get("grade") == "B"))
-        m4.metric("Ungraded", sum(1 for r in db["results"] if r.get("grade", "ungraded") == "ungraded"))
-        m5.metric("With Contact", sum(1 for r in db["results"] if r.get("phone") or r.get("email")))
+        m2.metric("✅ Helpful",   sum(1 for r in db["results"] if r.get("grade") == "Helpful"))
+        m3.metric("❌ Not Helpful", sum(1 for r in db["results"] if r.get("grade") == "Not Helpful"))
+        m4.metric("Not Called",   sum(1 for r in db["results"] if r.get("grade", "not called") == "not called"))
 
         # ── Export row ────────────────────────────────────────────────────────
         df_all = pd.DataFrame(db["results"])
@@ -799,7 +794,7 @@ Then redeploy — data will survive all future restarts.
             f_address = st.checkbox("Has address")
         with fc3:
             f_grades = st.multiselect(
-                "Grade", ["A", "B", "C", "Reject", "ungraded"],
+                "Grade", ["not called", "Helpful", "Not Helpful"],
                 placeholder="All grades",
             )
         with fc4:
@@ -812,21 +807,21 @@ Then redeploy — data will survive all future restarts.
         if f_contact: display = [r for r in display if r.get("phone") or r.get("email")]
         if f_address: display = [r for r in display if r.get("plant_address")]
         if f_grades:
-            display = [r for r in display if r.get("grade", "ungraded") in f_grades]
+            display = [r for r in display if r.get("grade", "not called") in f_grades]
         if f_certs:
             display = [r for r in display if all(
                 c.upper() in " ".join(r.get("certifications") or []).upper() for c in f_certs
             )]
 
-        # Sort: ungraded → A → B → C → Reject
-        display.sort(key=lambda r: _GRADE_SORT.get(r.get("grade", "ungraded"), 3))
+        # Sort: not called first, then Helpful, then Not Helpful
+        display.sort(key=lambda r: _GRADE_SORT.get(r.get("grade", "not called"), 0))
 
         if not display:
             st.warning("No results match your filters.")
 
         elif view_mode == "Table":
             df_d = pd.DataFrame(display)
-            COLS = ["company_name", "grade", "status", "city", "state",
+            COLS = ["company_name", "grade", "city", "state",
                     "phone", "email", "certifications", "dosage_forms", "found_at"]
             avail = [c for c in COLS if c in df_d.columns]
             tbl = df_d[avail].copy()
@@ -853,15 +848,12 @@ Then redeploy — data will survive all future restarts.
 
                 exp_title = (
                     f"🏭  {name}  ·  {loc}  "
-                    + ("⬜ ungraded" if grade == "ungraded" else
-                       "🟢 A" if grade == "A" else
-                       "🔵 B" if grade == "B" else
-                       "🟡 C" if grade == "C" else
-                       "🔴 Reject")
-                    + (f"  ·  {status}" if status != "new" else "")
+                    + ("⬜ not called" if grade == "not called" else
+                       "✅ Helpful" if grade == "Helpful" else
+                       "❌ Not Helpful")
                 )
 
-                with st.expander(exp_title, expanded=(grade == "ungraded")):
+                with st.expander(exp_title, expanded=(grade == "not called")):
                     col_l, col_r = st.columns(2)
 
                     with col_l:
@@ -914,42 +906,40 @@ Then redeploy — data will survive all future restarts.
 
                     # ── Grade form ─────────────────────────────────────────────
                     st.markdown('<div class="grade-box">', unsafe_allow_html=True)
-                    st.markdown("**📋 Your Assessment**")
-                    gf1, gf2, gf3, gf4 = st.columns([1, 1, 3, 1])
+                    st.markdown("**📞 After the call**")
+                    gf1, gf2, gf3 = st.columns([1, 1, 3])
 
                     with gf1:
-                        cur_grade = r.get("grade", "ungraded")
-                        grade_sel = st.selectbox(
-                            "Grade",
-                            GRADES,
-                            index=GRADES.index(cur_grade) if cur_grade in GRADES else 0,
-                            format_func=lambda g: _GRADE_LABEL[g],
-                            key=f"gs_{true_idx}",
-                        )
-                    with gf2:
-                        cur_status = r.get("status", "new")
-                        status_sel = st.selectbox(
-                            "Status",
-                            STATUSES,
-                            index=STATUSES.index(cur_status) if cur_status in STATUSES else 0,
-                            key=f"ss_{true_idx}",
-                        )
-                    with gf3:
-                        notes_sel = st.text_input(
-                            "Notes",
-                            value=r.get("grade_notes", ""),
-                            placeholder="e.g. Good capacity, need to verify GMP cert…",
-                            key=f"ns_{true_idx}",
-                        )
-                    with gf4:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("💾 Save", key=f"sg_{true_idx}", use_container_width=True):
-                            err = _save_grade(true_idx, grade_sel, status_sel, notes_sel)
+                        if st.button(
+                            "✅ Helpful", key=f"gh_{true_idx}",
+                            use_container_width=True,
+                            type="primary" if grade == "Helpful" else "secondary",
+                        ):
+                            notes_val = st.session_state.get(f"ns_{true_idx}", r.get("grade_notes", ""))
+                            err = _save_grade(true_idx, "Helpful", notes_val)
                             if err:
                                 st.error(f"Save failed: {err}")
                             else:
-                                st.success("Saved!")
                                 st.rerun()
+                    with gf2:
+                        if st.button(
+                            "❌ Not Helpful", key=f"gn_{true_idx}",
+                            use_container_width=True,
+                            type="primary" if grade == "Not Helpful" else "secondary",
+                        ):
+                            notes_val = st.session_state.get(f"ns_{true_idx}", r.get("grade_notes", ""))
+                            err = _save_grade(true_idx, "Not Helpful", notes_val)
+                            if err:
+                                st.error(f"Save failed: {err}")
+                            else:
+                                st.rerun()
+                    with gf3:
+                        st.text_input(
+                            "Notes",
+                            value=r.get("grade_notes", ""),
+                            placeholder="e.g. Spoke with sales, good MOQ, follow up next week…",
+                            key=f"ns_{true_idx}",
+                        )
 
                     if r.get("graded_at"):
                         st.caption(f"Last graded: {r['graded_at']}")
@@ -973,8 +963,7 @@ Then redeploy — data will survive all future restarts.
                     for r in imp_res:
                         n = r.get("company_name", "").strip().lower()
                         if n and n not in existing_names:
-                            r.setdefault("grade", "ungraded")
-                            r.setdefault("status", "new")
+                            r.setdefault("grade", "not called")
                             db["results"].append(r)
                             existing_names.add(n)
                             added += 1
