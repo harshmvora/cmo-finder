@@ -59,16 +59,15 @@ _COLS = {
     "grade", "status", "grade_notes", "graded_at",
 }
 
-# Module-level singleton — created once per process lifetime.
+# Module-level singleton — set only on successful connection.
 _client = None
-_init_done = False
 
 
 def _get_client():
-    global _client, _init_done
-    if _init_done:
+    """Return the Supabase client, retrying on each call until connected."""
+    global _client
+    if _client is not None:
         return _client
-    _init_done = True
 
     url = key = ""
     try:
@@ -87,7 +86,7 @@ def _get_client():
             from supabase import create_client
             _client = create_client(url, key)
         except Exception:
-            _client = None
+            pass
     return _client
 
 
